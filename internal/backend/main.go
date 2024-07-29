@@ -43,6 +43,7 @@ type instance struct {
 	containerTemplate corev1.Container
 	initImage         string
 	dindImage         string
+	disableDind       bool
 	imagePullSecrets  []string
 	namespace         string
 	timeOut           int
@@ -65,10 +66,12 @@ type Config struct {
 	// DindImage is the image that is used as a sidecar container to
 	// support docker-in-docker
 	DindImage string
+	// DisableDind will disable docker-in-docker support when set to true
+	DisableDind bool
 	// TimeOut is the max amount of time to wait until a container started
 	// or deleted.
 	TimeOut time.Duration
-	// PodTemplate refers to an optional file containig a pod resource that
+	// PodTemplate refers to an optional file containing a pod resource that
 	// should be used as the base for creating pod resources.
 	PodTemplate string
 	// KubedockURL contains the url of this kubedock instance, to be used in
@@ -76,7 +79,7 @@ type Config struct {
 	KubedockURL string
 }
 
-// New will return an Backend instance.
+// New will return a Backend instance.
 func New(cfg Config) (Backend, error) {
 	pod := &corev1.Pod{}
 	if cfg.PodTemplate != "" {
@@ -92,6 +95,7 @@ func New(cfg Config) (Backend, error) {
 		cfg:               cfg.RestConfig,
 		initImage:         cfg.InitImage,
 		dindImage:         cfg.DindImage,
+		disableDind:       cfg.DisableDind,
 		namespace:         cfg.Namespace,
 		imagePullSecrets:  cfg.ImagePullSecrets,
 		podTemplate:       pod,

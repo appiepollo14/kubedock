@@ -41,6 +41,9 @@ func ContainerCreate(cr *common.ContextRouter, c *gin.Context) {
 		// The User defined in HTTP request takes precedence over the cli and label.
 		in.Labels[types.LabelRunasUser] = in.User
 	}
+	if _, ok := in.Labels[types.LabelNamePrefix]; !ok && cr.Config.NamePrefix != "" {
+		in.Labels[types.LabelNamePrefix] = cr.Config.NamePrefix
+	}
 	if _, ok := in.Labels[types.LabelRequestCPU]; !ok && cr.Config.RequestCPU != "" {
 		in.Labels[types.LabelRequestCPU] = cr.Config.RequestCPU
 	}
@@ -296,7 +299,7 @@ func getContainerInfo(cr *common.ContextRouter, tainr *types.Container, detail b
 			"Env":          tainr.Env,
 			"Cmd":          tainr.Cmd,
 			"Hostname":     "localhost",
-			"ExposedPorts": getNetworkSettingsPorts(cr, tainr),
+			"ExposedPorts": getConfigExposedPorts(cr, tainr),
 			"Tty":          false,
 		}
 		res["Created"] = tainr.Created.Format("2006-01-02T15:04:05Z")
@@ -332,6 +335,19 @@ func getNetworkSettingsPorts(cr *common.ContextRouter, tainr *types.Container) g
 			done[src] = 1
 		}
 		res[fmt.Sprintf("%d/tcp", dst)] = pp
+	}
+	return res
+}
+
+// getConfigExposedPorts will return the available ports of the container
+// as a gin.H json structure to be used in container config details.
+func getConfigExposedPorts(cr *common.ContextRouter, tainr *types.Container) gin.H {
+	res := gin.H{}
+	if tainr.HostIP == "" {
+		return res
+	}
+	for dst := range getAvailablePorts(cr, tainr) {
+		res[fmt.Sprintf("%d/tcp", dst)] = gin.H{}
 	}
 	return res
 }

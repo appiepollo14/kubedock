@@ -89,11 +89,12 @@ func Main() {
 	select {}
 }
 
-// getBackend will instantiate a the kubedock kubernetes object.
+// getBackend will instantiate the kubedock kubernetes object.
 func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, error) {
 	ns := viper.GetString("kubernetes.namespace")
 	initimg := viper.GetString("kubernetes.initimage")
 	dindimg := viper.GetString("kubernetes.dindimage")
+	disdind := viper.GetBool("kubernetes.disable-dind")
 	timeout := viper.GetDuration("kubernetes.timeout")
 	podtmpl := viper.GetString("kubernetes.pod-template")
 	imgpsr := strings.ReplaceAll(viper.GetString("kubernetes.image-pull-secrets"), " ", "")
@@ -106,6 +107,9 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 	}
 
 	klog.Infof("kubernetes config: namespace=%s, initimage=%s, dindimage=%s, ready timeout=%s%s", ns, initimg, dindimg, timeout, optlog)
+	if disdind {
+		klog.Infof("docker-in-docker support disabled")
+	}
 
 	kuburl, err := getKubedockURL()
 	if err != nil {
@@ -119,6 +123,7 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 		Namespace:        ns,
 		InitImage:        initimg,
 		DindImage:        dindimg,
+		DisableDind:      disdind,
 		ImagePullSecrets: imgps,
 		PodTemplate:      podtmpl,
 		KubedockURL:      kuburl,
@@ -202,12 +207,22 @@ func exitHandler(kub backend.Backend, cancel context.CancelFunc) {
 		syscall.SIGTERM,
 		syscall.SIGQUIT)
 	go func() {
-		<-sigc
+		c := getExitCode(<-sigc)
 		cancel()
 		klog.Info("exit signal recieved, removing pods, configmaps and services")
 		if err := kub.DeleteWithKubedockID(config.InstanceID); err != nil {
 			klog.Errorf("error pruning resources: %s", err)
 		}
-		os.Exit(0)
+		os.Exit(c)
 	}()
+}
+
+// getExitCode will map signal to a meaningfull exit code.
+func getExitCode(sig os.Signal) int {
+	c := 0
+	switch sig := sig.(type) {
+	case syscall.Signal:
+		c = 128 + int(sig)
+	}
+	return c
 }
