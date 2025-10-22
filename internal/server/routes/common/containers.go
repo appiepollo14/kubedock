@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"k8s.io/klog"
 
-	"github.com/joyrex2001/kubedock/internal/backend"
 	"github.com/joyrex2001/kubedock/internal/events"
 	"github.com/joyrex2001/kubedock/internal/server/httputil"
 )
@@ -182,40 +182,34 @@ func ContainerKill(cr *ContextRouter, c *gin.Context) {
 // https://docs.podman.io/en/latest/_static/api.html?version=v4.2#tag/containers/operation/ContainerAttachLibpod
 // POST "/containers/:id/attach"
 // POST "/libpod/containers/:id/attach"
-func ContainerAttach(cr *ContextRouter, c *gin.Context) {
-	id := c.Param("id")
-	tainr, err := cr.DB.GetContainerByNameOrID(id)
+func ContainerAttach(cr *ContextRouter, ctx *gin.Context) {
+	id := ctx.Param("id")
+	c, err := cr.DB.GetContainerByNameOrID(id)
 	if err != nil {
-		httputil.Error(c, http.StatusNotFound, err)
+		httputil.Error(ctx, http.StatusNotFound, err)
 		return
 	}
 
-	stdin, _ := strconv.ParseBool(c.Query("stdin"))
-	if stdin {
-		c.Writer.WriteHeader(http.StatusNotImplemented)
+	stdin, _ := strconv.ParseBool(ctx.Query("stdin"))
+	stdout, _ := strconv.ParseBool(ctx.Query("stdout"))
+	stderr, _ := strconv.ParseBool(ctx.Query("stderr"))
+	stream, _ := strconv.ParseBool(ctx.Query("stream"))
+	tty, _ := strconv.ParseBool(ctx.Query("tty"))
+
+	if !stream {
+		ctx.Writer.WriteHeader(http.StatusNoContent)
 		return
 	}
-	stdout, _ := strconv.ParseBool(c.Query("stdout"))
-	stderr, _ := strconv.ParseBool(c.Query("stderr"))
-	if !stdout || !stderr {
-		klog.Warningf("Ignoring stdout/stderr filtering")
-	}
 
-	if !tainr.Running && !tainr.Completed {
-		if err := StartContainer(cr, tainr); err != nil {
-			httputil.Error(c, http.StatusInternalServerError, err)
+	if !c.Running && !c.Completed {
+		if err := StartContainer(cr, c); err != nil {
+			httputil.Error(ctx, http.StatusInternalServerError, err)
 			return
 		}
 	}
 
-	stream, _ := strconv.ParseBool(c.Query("stream"))
-	if !stream {
-		c.Writer.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	r := c.Request
-	w := c.Writer
+	r := ctx.Request
+	w := ctx.Writer
 	w.WriteHeader(http.StatusOK)
 
 	in, out, err := httputil.HijackConnection(w)
@@ -227,16 +221,47 @@ func ContainerAttach(cr *ContextRouter, c *gin.Context) {
 	httputil.UpgradeConnection(r, out)
 
 	stop := make(chan struct{}, 1)
-	tainr.AddAttachChannel(stop)
+	c.AddAttachChannel(stop)
 
-	count := uint64(100)
-	logOpts := backend.LogOptions{Follow: true, TailLines: &count}
-	if err := cr.Backend.GetLogs(tainr, &logOpts, stop, out); err != nil {
-		klog.V(3).Infof("error retrieving logs: %s", err)
+	// TODO: can this be replaced?
+	//count := uint64(100)
+	//logOpts := backend.LogOptions{Follow: true, TailLines: &count}
+	//if err := cr.Backend.GetLogs(c, &logOpts, stop, out); err != nil {
+	//	klog.V(3).Infof("error retrieving logs: %s", err)
+	//}
+	go func() {
+		<-stop
+	}()
+
+	err = cr.Backend.AttachContainer(
+		c,
+		func() io.Reader {
+			if stdin {
+				return in
+			}
+			return nil
+		}(),
+		func() io.Writer {
+			if stdout {
+				return out
+			}
+			return nil
+		}(),
+		func() io.Writer {
+			if stderr {
+				return out
+			}
+			return nil
+		}(),
+		tty,
+	)
+	if err != nil {
+		klog.Errorf("attach error: %v", err)
 	}
 
-	cr.Events.Publish(tainr.ID, events.Container, events.Detach)
-	cr.Events.Publish(tainr.ID, events.Container, events.Die)
+	cr.Events.Publish(c.ID, events.Container, events.Detach)
+	// Why we publish the: "Die" event here, that is not up to this method right?
+	cr.Events.Publish(c.ID, events.Container, events.Die)
 }
 
 // ContainerResize - resize the tty for a container.
